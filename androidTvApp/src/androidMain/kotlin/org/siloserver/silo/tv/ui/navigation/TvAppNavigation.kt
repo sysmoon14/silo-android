@@ -81,6 +81,7 @@ import org.siloserver.silo.common.profiles.ProfileLaunchPreferences
 import org.siloserver.silo.tv.profiles.TvActiveProfileReset
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
+import org.siloserver.silo.model.feature.ShuffleStart
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import org.siloserver.silo.tv.ui.screens.cast.TvSiloCastStandbyView
@@ -491,6 +492,7 @@ fun TvAppNavigation(
     val activeProfileReset: TvActiveProfileReset = koinInject()
     val remotePlaybackIdentityManager: RemotePlaybackIdentityManager = koinInject()
     val playbackLifecycle: PlaybackSessionLifecycle = koinInject()
+    val shuffleFeatureStore: org.siloserver.silo.model.feature.ShuffleFeatureStore = koinInject()
 
     // Android can restore Silo's previous back stack over the start route
     // MainTvActivity chose: after a configuration change while Silo was away,
@@ -621,6 +623,9 @@ fun TvAppNavigation(
         // looping forever.
         var attemptUri: Uri? = null
         var attempts = 0
+        // The shuffle a series or season play link started, kept with its
+        // link so a retried navigation replays it instead of starting another.
+        var linkShuffle: Pair<Uri, org.siloserver.silo.model.shuffle.Shuffle>? = null
         kotlinx.coroutines.flow.combine(
             pendingDeepLink,
             navController.currentBackStackEntryFlow,
@@ -692,11 +697,16 @@ fun TvAppNavigation(
             } else {
                 null
             }
+            val shuffleKind = if (uri.host == "play") tvPlayDeepLinkShuffleKind(itemType, contentId) else null
+            val startedShuffle = linkShuffle?.takeIf { it.first == uri }?.second
             val arrived = entry.arguments?.getString("libraryId") == null && when (uri.host) {
                 "item" ->
                     route == TvRoute.ItemDetail.ROUTE &&
                         entry.arguments?.getString(TvRoute.ItemDetail.ARG_CONTENT_ID) == contentId
-                "play" -> tvPlaybackDeepLinkArrived(
+                "play" -> if (shuffleKind != null) {
+                    route == TvRoute.Player.ROUTE && startedShuffle != null &&
+                        entry.arguments?.getString(TvRoute.Player.ARG_SHUFFLE_ID) == startedShuffle.id
+                } else tvPlaybackDeepLinkArrived(
                     currentRoute = route,
                     currentContentId = entry.arguments?.getString(TvRoute.Player.ARG_CONTENT_ID),
                     currentFileId = entry.arguments
@@ -718,6 +728,7 @@ fun TvAppNavigation(
             if (arrived) {
                 Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link arrived: ${uri.host}/$contentId")
                 pendingDeepLink.value = null
+                linkShuffle = null
                 return@collect
             }
             if (attempts >= MAX_DEEP_LINK_NAV_ATTEMPTS) {
@@ -735,7 +746,29 @@ fun TvAppNavigation(
             )
             when (uri.host) {
                 "item" -> navController.navigateToTvItemDetail(contentId)
-                "play" -> {
+                "play" -> if (shuffleKind != null) {
+                    val shuffle = startedShuffle ?: run {
+                        // Capability may still be loading on a cold launch.
+                        if (!shuffleFeatureStore.capability.value.supports(shuffleKind)) {
+                            shuffleFeatureStore.refresh()
+                        }
+                        val started = if (shuffleFeatureStore.capability.value.supports(shuffleKind)) {
+                            shuffleFeatureStore.start(shuffleKind, contentId)
+                        } else {
+                            null
+                        }
+                        (started as? ShuffleStart.Started)?.shuffle
+                    }
+                    if (shuffle == null) {
+                        // Shuffle is off, or nothing in it can play: open its
+                        // page, where the viewer can see why and pick.
+                        Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link shuffle unavailable, opening item: $contentId")
+                        pendingDeepLink.value = uri.buildUpon().authority("item").clearQuery().build()
+                        return@collect
+                    }
+                    linkShuffle = uri to shuffle
+                    navController.navigateToTvShufflePlayback(shuffle, null, lastPlaybackNavigation)
+                } else {
                     // The Watch Next mapper tags play intents with the item type
                     // (`silo://play/<contentId>?type=<type>`) so audiobook tiles
                     // route to [TvRoute.AudiobookPlayer] instead of the video
