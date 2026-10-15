@@ -65,6 +65,7 @@ import org.siloserver.silo.tv.data.preferences.TvLibraryScopeStore
 import org.siloserver.silo.common.profiles.ProfileLaunchBehavior
 import org.siloserver.silo.common.profiles.ProfileLaunchPreferences
 import org.siloserver.silo.tv.profiles.TvActiveProfileReset
+import org.siloserver.silo.tv.profiles.TvDeepLinkProfileSwitch
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
 import org.siloserver.silo.tv.watchnext.WatchNextRepository
 import org.siloserver.silo.tv.watchnext.WatchNextSeeder
@@ -366,6 +367,8 @@ val androidTvModule = module {
         )
     }
     single { TvActiveProfileReset(get(), get(), get(), get(), get(), get(), get(), get()) }
+    // Opens the profile a content deep link names, when it has no PIN.
+    single { TvDeepLinkProfileSwitch(profileRepository = get(), tokenManager = get(), activeProfileReset = get()) }
 
     // Deep-link bridge between MainTvActivity (producer) and TvAppNavigation
     // (consumer). The Activity writes incoming Silo app-scheme URIs here on
