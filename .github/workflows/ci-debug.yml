@@ -20,10 +20,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          ./gradlew -Dorg.gradle.jvmargs="-Xmx4g" :androidTvApp:testDebugUnitTest --continue --max-workers=2 > out.txt 2>&1
+          ./gradlew -Dorg.gradle.jvmargs="-Xmx4g" testDebugUnitTest :androidTvApp:bundleRelease -Pandroid.r8.maxWorkers=1 --continue --max-workers=2 > out.txt 2>&1
           status=$?
-          grep -E "^e: |^w: .*(Profile|LinkProfile|TvAppNavigation|MainTvActivity)|FAILED|Exception|AssertionError|expected:" out.txt | grep -v "^\s*at " | head -60 > errs.txt
-          for f in androidTvApp/build/test-results/testDebugUnitTest/TEST-*.xml; do
+          grep -E "^e: |ERROR|What went wrong|> Task.*FAILED|^w: .*(Profile|LinkProfile|TvAppNavigation|MainTvActivity)|FAILED|Exception|AssertionError|expected:" out.txt | grep -v "^\s*at " | head -60 > errs.txt
+          for f in */build/test-results/testDebugUnitTest/TEST-*.xml; do
             python3 - "$f" >> errs.txt <<'PY'
           import sys, xml.etree.ElementTree as ET
           s = ET.parse(sys.argv[1]).getroot()
