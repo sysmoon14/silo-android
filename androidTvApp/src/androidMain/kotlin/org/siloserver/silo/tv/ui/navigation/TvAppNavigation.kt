@@ -778,6 +778,9 @@ fun TvAppNavigation(
                         return@collect
                     }
                     TvLinkProfileStep.Switch -> {
+                        // A phone-launched title owns identity until it ends;
+                        // the link waits rather than replace it.
+                        if (tokenManager.hasTemporaryScope()) return@collect
                         val onPicker = route == TvRoute.ProfileSelection.route
                         if (!onPicker) linkProfileSwitch.beginCover()
                         try {
