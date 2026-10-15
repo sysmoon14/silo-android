@@ -16,11 +16,13 @@ jobs:
           distribution: temurin
           java-version: "21"
       - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+        with:
+          cache-read-only: false
       - name: Compile and test the TV app
         shell: bash
         run: |
           set +e
-          ./gradlew -Dorg.gradle.jvmargs="-Xmx4g" testDebugUnitTest :androidTvApp:bundleRelease -Pandroid.r8.maxWorkers=1 --continue --max-workers=2 > out.txt 2>&1
+          ./gradlew -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" testDebugUnitTest --build-cache --parallel --no-configuration-cache --max-workers=2 > out.txt 2>&1
           status=$?
           grep -E "^e: |ERROR|What went wrong|> Task.*FAILED|^w: .*(Profile|LinkProfile|TvAppNavigation|MainTvActivity)|FAILED|Exception|AssertionError|expected:" out.txt | grep -v "^\s*at " | head -60 > errs.txt
           for f in */build/test-results/testDebugUnitTest/TEST-*.xml; do
@@ -34,7 +36,7 @@ jobs:
                       print(f"TEST {c.get('classname')}.{c.get('name')}: {(e.get('message') or '')[:400]}")
           PY
           done
-          tail -5 out.txt >> errs.txt
+          head -40 out.txt >> errs.txt; tail -40 out.txt >> errs.txt
           body=$(python3 -c "import sys;print(open('errs.txt').read().replace('%','%25').replace('\r','').replace('\n','%0A'))")
           echo "::error title=ci-debug::${body}"
           exit $status
