@@ -456,10 +456,9 @@ class MainTvActivity : ComponentActivity() {
         } else {
             get<ProfileAwayTracker>(ProfileAwayTracker::class.java).selectionRequired.value
         }
-        val opened = kotlinx.coroutines.withContext(Dispatchers.IO) {
-            get<TvDeepLinkProfileSwitch>(TvDeepLinkProfileSwitch::class.java)
-                .activate(linkProfileId, selectionRequired)
-        }
+        // On the main thread, like the picker's reset: the profile stores it clears are observed by UI.
+        val opened = get<TvDeepLinkProfileSwitch>(TvDeepLinkProfileSwitch::class.java)
+            .activate(linkProfileId, selectionRequired)
         if (!opened) return false
         Log.i(DEEP_LINK_TAG, "deep link opened its profile at launch")
         // A chosen profile ends any away interval, as a pick on the picker does.
