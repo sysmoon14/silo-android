@@ -1,6 +1,7 @@
 package org.siloserver.silo.tv.ui.navigation
 
 import org.siloserver.silo.model.catalog.isAudiobookItemType
+import org.siloserver.silo.model.shuffle.ShuffleScopeKind
 import org.siloserver.silo.common.player.video.VideoPlayerRouteArgs
 
 /**
@@ -128,3 +129,24 @@ internal fun tvPlaybackDeepLinkArrived(
         currentAudioTrackIndex == requested.audioTrackIndex &&
         currentSubtitleTrackIndex == requested.subtitleTrackIndex
 }
+
+/**
+ * The shuffle a `silo://play` link asks for, or null when it plays one title.
+ *
+ * A series or season can't play as one title, so a play link for one starts
+ * a Shuffle of it, like the Shuffle button on its page. The link's `type`
+ * decides when present; otherwise the content id's entity prefix does
+ * (`series-tvdb-…`, `season-tvdb-…`), which covers every matched item.
+ * Unmatched `local-…` items need `type=series` or `type=season`.
+ */
+internal fun tvPlayDeepLinkShuffleKind(itemType: String?, contentId: String): ShuffleScopeKind? =
+    when (itemType?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }) {
+        "series" -> ShuffleScopeKind.SERIES
+        "season" -> ShuffleScopeKind.SEASON
+        null -> when {
+            contentId.startsWith("series-") -> ShuffleScopeKind.SERIES
+            contentId.startsWith("season-") -> ShuffleScopeKind.SEASON
+            else -> null
+        }
+        else -> null
+    }
