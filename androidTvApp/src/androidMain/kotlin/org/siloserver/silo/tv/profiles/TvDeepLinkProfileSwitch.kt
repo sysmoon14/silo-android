@@ -24,14 +24,14 @@ private val TV_PROFILE_ID_PATTERN = Regex("^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 
 /** The profile a content link names, or null when it names none (or a malformed one). */
 internal fun tvDeepLinkProfileId(host: String?, queryParameter: (String) -> String?): String? {
-    if (host?.lowercase() !in TV_PROFILE_LINK_HOSTS) return null
+    if (host == null || host.lowercase() !in TV_PROFILE_LINK_HOSTS) return null
     return queryParameter(TV_DEEP_LINK_PROFILE_PARAM)
         ?.trim()
         ?.takeIf { TV_PROFILE_ID_PATTERN.matches(it) }
 }
 
 /** [tvDeepLinkProfileId] for a delivered link. */
-internal fun Uri.tvDeepLinkProfileId(): String? = tvDeepLinkProfileId(host, ::getQueryParameter)
+internal fun Uri.tvDeepLinkProfileId(): String? = tvDeepLinkProfileId(host) { getQueryParameter(it) }
 
 /**
  * Opens the profile a content deep link names (`silo://play/<id>?profile=<id>`)
