@@ -559,13 +559,35 @@ fun TvAppNavigation(
         }
     }
 
+    fun hasMainEntry(): Boolean =
+        runCatching { navController.getBackStackEntry(TvRoute.Main.route) }.isSuccess
+
+    // Before a link replaces the profile, leave the previous profile's
+    // screens, as Switch Profile does: a player still on screen when the
+    // identity changes tears itself down mid-navigation. Its final report
+    // and stop land (bounded) under the profile that played it.
+    suspend fun leaveForLinkProfile() {
+        if (hasMainEntry() && navController.currentDestination?.route != TvRoute.Main.route) {
+            navController.popBackStack(TvRoute.Main.route, inclusive = false)
+            withTimeoutOrNull(PROFILE_COVER_MAX_MS) {
+                navController.visibleEntries.first { entries ->
+                    entries.isNotEmpty() && entries.all { it.destination.route == TvRoute.Main.route }
+                }
+            }
+        }
+        withTimeoutOrNull(CAST_PLAYBACK_TEARDOWN_TIMEOUT_MS) { playbackLifecycle.awaitPendingStop() }
+    }
+
     // Opens Main for the profile a deep link just made active. Main is
     // rebuilt rather than reused so nothing on screen belongs to the
     // previous profile; the still-queued link then opens over it.
     suspend fun openLinkProfile() {
         onProfileChosen()
+        // Main is the root of an authenticated stack; from Who's Watching the
+        // picker is.
+        val root = if (hasMainEntry()) TvRoute.Main.route else TvRoute.ProfileSelection.route
         navController.navigate(TvRoute.Main.route) {
-            popUpTo(0) { inclusive = true }
+            popUpTo(root) { inclusive = true }
             launchSingleTop = true
         }
         withTimeoutOrNull(PROFILE_COVER_MAX_MS) {
@@ -641,11 +663,14 @@ fun TvAppNavigation(
             // Silo was brought back by a content link that names a profile
             // without a PIN: open it under the cover instead of Who's Watching.
             val linkProfileId = pendingDeepLink.value?.tvDeepLinkProfileId()
-            if (linkProfileId != null && linkProfileSwitch.activate(linkProfileId, selectionRequired = true)) {
-                Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link opened its profile on return")
-                openLinkProfile()
-                profileAwayTracker.onSelectionHandled()
-                return@collect
+            if (linkProfileId != null) {
+                leaveForLinkProfile()
+                if (linkProfileSwitch.activate(linkProfileId, selectionRequired = true)) {
+                    Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link opened its profile on return")
+                    openLinkProfile()
+                    profileAwayTracker.onSelectionHandled()
+                    return@collect
+                }
             }
             // Leave the profile's screens before clearing its state (see
             // onSwitchProfile). MainTvActivity.onStop already flushed pending
@@ -789,6 +814,7 @@ fun TvAppNavigation(
                         val onPicker = route == TvRoute.ProfileSelection.route
                         if (!onPicker) linkProfileSwitch.beginCover()
                         try {
+                            if (!onPicker) leaveForLinkProfile()
                             val opened = linkProfileSwitch.activate(
                                 linkProfileId,
                                 selectionRequired = onPicker || profileLaunchPreferences.requiresSelectionAfterBackground(),
