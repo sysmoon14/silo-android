@@ -743,7 +743,9 @@ fun TvAppNavigation(
             navController.currentBackStackEntryFlow,
             // Re-runs a held link once a chosen profile ends the away interval.
             profileLaunchPreferences.state,
-        ) { uri, entry, _ -> uri to entry }.collect { (uri, entry) ->
+            // Re-runs a link held while the return rule opened its profile.
+            profileAwayTracker.selectionRequired,
+        ) { uri, entry, _, _ -> uri to entry }.collect { (uri, entry) ->
             if (uri == null) return@collect
             if (uri != attemptUri) {
                 attemptUri = uri
