@@ -267,11 +267,19 @@ jobs:
 
           # CI exercises debug variants; release.yml runs the release variant's
           # host tests (release behavior and BuildConfig values) before Play.
+          set +e
           ./gradlew \
             -Dorg.gradle.jvmargs="-Xmx4g -Dfile.encoding=UTF-8" \
             testDebugUnitTest \
             "${SILO_CI_CACHE_FLAG}" "${SILO_CI_PARALLEL_FLAG}" "${SILO_CI_CONFIGURATION_FLAG}" \
-            --max-workers=2
+            --max-workers=2 > gradle-out.txt 2>&1
+          status=$?
+          body=$(head -60 gradle-out.txt | python3 -c "import sys;print(sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'))")
+          echo "::error title=gradle-head::${body}"
+          body=$(tail -60 gradle-out.txt | python3 -c "import sys;print(sys.stdin.read().replace('%','%25').replace('\r','').replace('\n','%0A'))")
+          echo "::error title=gradle-tail::${body}"
+          set -e
+          [ $status -eq 0 ]
 
           python3 - <<'PY'
           import json
