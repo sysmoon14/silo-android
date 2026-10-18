@@ -747,18 +747,13 @@ fun TvAppNavigation(
             when (uri.host) {
                 "item" -> navController.navigateToTvItemDetail(contentId)
                 "play" -> if (shuffleKind != null) {
-                    val shuffle = startedShuffle ?: run {
-                        // Capability may still be loading on a cold launch.
-                        if (!shuffleFeatureStore.capability.value.supports(shuffleKind)) {
-                            shuffleFeatureStore.refresh()
-                        }
-                        val started = if (shuffleFeatureStore.capability.value.supports(shuffleKind)) {
-                            shuffleFeatureStore.start(shuffleKind, contentId)
-                        } else {
-                            null
-                        }
-                        (started as? ShuffleStart.Started)?.shuffle
-                    }
+                    // Asks the server directly rather than the capability
+                    // the Shuffle buttons wait for: that is reset and
+                    // reloaded on every profile switch, so a link that just
+                    // opened its profile would find it empty. A server
+                    // without Shuffle refuses the request.
+                    val shuffle = startedShuffle
+                        ?: (shuffleFeatureStore.start(shuffleKind, contentId) as? ShuffleStart.Started)?.shuffle
                     if (shuffle == null) {
                         // Shuffle is off, or nothing in it can play: open its
                         // page, where the viewer can see why and pick.
