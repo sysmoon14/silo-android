@@ -1,0 +1,64 @@
+name: test-apk
+# Fork-only: builds the TV app from test/** branches and publishes it as a
+# GitHub release, so a TV can update in place (Obtainium or Downloader).
+on:
+  push:
+    branches: ["test/**"]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: test-apk
+  cancel-in-progress: true
+jobs:
+  tv-debug-apk:
+    runs-on: ubuntu-latest
+    env:
+      # Rises with every run, so each build installs over the last.
+      SILO_VERSION_CODE: ${{ github.run_number }}
+      SILO_VERSION_NAME: 0.1.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92 # v6
+      # One debug key for every test build, so updates keep the TV signed in.
+      # A throwaway debug key (password "android"). The TEST_DEBUG_KEYSTORE_B64
+      # secret wins when set; otherwise the copy kept on this fork-only branch.
+      - name: Use the shared test signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.TEST_DEBUG_KEYSTORE_B64 }}
+        run: |
+          mkdir -p ~/.android
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          else
+            cp .github/test-build/debug.keystore ~/.android/debug.keystore
+          fi
+      - run: ./gradlew -Dorg.gradle.jvmargs="-Xmx4g" :androidTvApp:assembleDebug --max-workers=2
+      - name: Collect the APK
+        run: |
+          apk=$(ls androidTvApp/build/outputs/apk/debug/*.apk | head -1)
+          cp "$apk" silo-tv-deep-links.apk
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: silo-tv-deep-links-debug
+          path: silo-tv-deep-links.apk
+          if-no-files-found: error
+      - name: Publish a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.1.${{ github.run_number }}
+        run: |
+          gh release create "$TAG" silo-tv-deep-links.apk \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+            --title "Test build $TAG (${GITHUB_REF_NAME})" \
+            --notes "Debug build of ${GITHUB_REF_NAME} at ${GITHUB_SHA::7}. Not an official Silo release."
+          # Keep the three newest test releases.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,createdAt \
+            --jq 'map(select(.tagName | startswith("v0.1."))) | sort_by(.createdAt) | reverse | .[3:][] | .tagName' |
+            while read -r old; do gh release delete "$old" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag; done
