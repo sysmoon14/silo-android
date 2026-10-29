@@ -37,6 +37,7 @@ import org.siloserver.silo.common.player.video.VideoPlaybackSessionCoordinator
 import org.siloserver.silo.common.player.video.VideoPlaybackStarter
 import org.siloserver.silo.tv.cast.TvSiloCastReceiver
 import org.siloserver.silo.tv.cast.SiloCastNowPlayingMetadataResolver
+import org.siloserver.silo.tv.cast.RemotePlaybackCandidatePolicy
 import org.siloserver.silo.tv.cast.RemotePlaybackIdentityManager
 import org.siloserver.silo.tv.ui.screens.player.TvPlayerLaunchArgs
 import org.siloserver.silo.tv.ui.screens.auth.TvLoginViewModel
@@ -65,6 +66,7 @@ import org.siloserver.silo.tv.data.preferences.TvLibraryScopeStore
 import org.siloserver.silo.common.profiles.ProfileLaunchBehavior
 import org.siloserver.silo.common.profiles.ProfileLaunchPreferences
 import org.siloserver.silo.tv.profiles.TvActiveProfileReset
+import org.siloserver.silo.tv.profiles.TvDeepLinkProfileSwitch
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
 import org.siloserver.silo.tv.watchnext.WatchNextRepository
 import org.siloserver.silo.tv.watchnext.WatchNextSeeder
@@ -234,6 +236,7 @@ val androidTvModule = module {
             sessionLifecycle = get(),
             reachabilityMonitor = get(),
             userItemStatePort = get(),
+            seriesTrackChoiceWriter = get(),
         )
     }
     factory {
@@ -352,6 +355,8 @@ val androidTvModule = module {
         )
     }
     single { TvActiveProfileReset(get(), get(), get(), get(), get(), get(), get(), get()) }
+    // Opens the profile a content deep link names, when it has no PIN.
+    single { TvDeepLinkProfileSwitch(profileRepository = get(), tokenManager = get(), activeProfileReset = get()) }
 
     // Deep-link bridge between MainTvActivity (producer) and TvAppNavigation
     // (consumer). The Activity writes incoming Silo app-scheme URIs here on
@@ -407,15 +412,24 @@ val androidTvModule = module {
     }
     single { SiloCastNsdAdvertiser(androidContext()) }
     single {
+        val identityApi = get<org.siloserver.silo.network.api.ServerIdentityApi>()
+        val registry = get<ServerRegistry>()
+        val cleartextConsent = get<CleartextConsentStore>()
         RemotePlaybackIdentityManager(
             deviceLoginApi = get(),
             tokenManager = get(),
             deviceNameProvider = ::tvDeviceName,
+            identityProbe = { url -> identityApi.probeIdentity(url) },
+            savedUrlsFor = { identity ->
+                RemotePlaybackCandidatePolicy.savedUrls(registry.entries.value, registry.activeServerId.value, identity)
+            },
+            cleartextApproved = { url -> cleartextConsent.isApproved(url) },
         )
     }
     single {
         val playbackLifecycle = get<org.siloserver.silo.common.player.PlaybackSessionLifecycle>()
         val activeProfiles = get<org.siloserver.silo.model.profile.ActiveProfileStore>()
+        val serverIdentities = get<org.siloserver.silo.repository.ServerIdentityRepository>()
         TvSiloCastReceiver(
             advertiser = get(),
             serverRegistry = get(),
@@ -432,6 +446,7 @@ val androidTvModule = module {
             },
             ownProfileNameProvider = { activeProfiles.activeProfile.value?.name },
             nowPlayingMetadataLoader = SiloCastNowPlayingMetadataResolver.catalogLoader(get()),
+            recordServerIdentity = { entry -> serverIdentities.identityOf(entry) },
         )
     }
 
@@ -541,6 +556,12 @@ val androidTvModule = module {
             collectionSource = params.values.getOrNull(4) as? String ?: "library_collection",
         )
     }
+    // TV never shows reading items, so a row's page drops them as the row does.
+    viewModel { params ->
+        org.siloserver.silo.viewmodel.SectionBrowseViewModel(get(), params.get()) { item ->
+            !org.siloserver.silo.tv.ui.util.isTvHiddenMediaType(item.type)
+        }
+    }
     viewModel { TvSearchViewModel(get(), get(), get()) }
     viewModel { params ->
         TvItemDetailViewModel(
@@ -558,6 +579,7 @@ val androidTvModule = module {
             tokenManager = get(),
             identityTransitions = get(),
             capabilityDetector = get(),
+            seriesTrackChoiceWriter = get(),
         )
     }
     // Watch Party: the shared hub, lobby (keyed per room; roomId is the
@@ -623,6 +645,8 @@ val androidTvModule = module {
             // adapter treats a wait while offline as an outage.
             networkEvidence = get(),
             throughputMeter = get(),
+            seriesTrackChoiceWriter = get(),
+            trickplayManifests = get(),
         )
     }
 

@@ -1,5 +1,6 @@
 package org.siloserver.silo.android.ui.screens.detail
 
+import org.siloserver.silo.model.catalog.parentPoster
 import org.siloserver.silo.android.ui.components.SiloDropdownMenuItem
 import org.siloserver.silo.android.ui.components.SiloDropdownMenu
 import org.siloserver.silo.android.ui.components.SiloConfirmDialog
@@ -752,7 +753,7 @@ fun ItemDetailScreen(
                             isInWatchlist = state.isInWatchlist,
                             nextEpisodeLabel = nextEpisodeLabel,
                             selectedEpisodeContentId = state.selectedEpisodeContentId,
-                            selectedEpisodeDetail = selectedEpisodeDetail,
+                            selectedEpisodeDetail = selectedEpisodeDetail?.let(state::withPickedSeriesChoices),
                             isLoadingSelectedEpisodeDetail = state.isLoadingSelectedEpisodeDetail,
                             selectedVersionIndex = selectedEpisodeVersionIndex,
                             isAutoVersion = !state.hasExplicitVersionSelection,
@@ -762,10 +763,18 @@ fun ItemDetailScreen(
                                 if (index == null) viewModel.selectAutoVersion() else viewModel.selectVersion(index)
                             },
                             onAudioSelected = { index ->
-                                if (index == null) viewModel.selectAutoAudioTrack() else viewModel.selectAudioTrack(index)
+                                if (index == null) {
+                                    viewModel.selectAutoAudioTrack()
+                                } else {
+                                    viewModel.selectAudioTrack(index, selectedEpisodeVersion)
+                                }
                             },
                             onSubtitleSelected = { index ->
-                                if (index == null) viewModel.selectAutoSubtitle() else viewModel.selectSubtitle(index)
+                                if (index == null) {
+                                    viewModel.selectAutoSubtitle()
+                                } else {
+                                    viewModel.selectSubtitle(index, selectedEpisodeVersion)
+                                }
                             },
                             onPlayClick = {
                                 selectedEpisode?.let {
@@ -925,16 +934,19 @@ fun ItemDetailScreen(
                             null
                         }
                         val seasonPosterUrl = episodeSeason?.posterUrl?.takeIf { it.isNotBlank() }
+                        // The episode's own season/series poster, when the server sends it.
+                        val parentPoster = detail.parentPoster()
                         val portraitArtwork = if (detail.type == "episode") {
                             DetailPortraitArtwork(
-                                url = seasonPosterUrl ?: state.episodeSeriesPosterUrl,
-                                thumbhash = if (seasonPosterUrl != null) {
-                                    episodeSeason?.posterThumbhash
-                                } else {
-                                    state.episodeSeriesPosterThumbhash
+                                url = seasonPosterUrl ?: parentPoster?.url ?: state.episodeSeriesPosterUrl,
+                                thumbhash = when {
+                                    seasonPosterUrl != null -> episodeSeason?.posterThumbhash
+                                    parentPoster != null -> parentPoster.thumbhash
+                                    else -> state.episodeSeriesPosterThumbhash
                                 },
                                 reserveSpace = true,
-                                isResolved = seasonPosterUrl != null || state.episodeSeriesPosterResolved,
+                                isResolved = seasonPosterUrl != null || parentPoster != null ||
+                                    state.episodeSeriesPosterResolved,
                             )
                         } else {
                             DetailPortraitArtwork(
@@ -973,7 +985,7 @@ fun ItemDetailScreen(
                         val movieResume = playbackResumePosition(detail.userData)
                         MovieDetailContent(
                             translation = translationSlot,
-                            detail = detail,
+                            detail = state.withPickedSeriesChoices(detail),
                             similarItems = state.similarItems,
                             portraitArtwork = portraitArtwork,
                             isFavorite = state.isFavorite,
@@ -1012,10 +1024,18 @@ fun ItemDetailScreen(
                                 if (index != null) viewModel.selectVersion(index) else viewModel.selectAutoVersion()
                             },
                             onAudioSelected = { index ->
-                                if (index != null) viewModel.selectAudioTrack(index) else viewModel.selectAutoAudioTrack()
+                                if (index != null) {
+                                    viewModel.selectAudioTrack(index, selectedVersion)
+                                } else {
+                                    viewModel.selectAutoAudioTrack()
+                                }
                             },
                             onSubtitleSelected = { index ->
-                                if (index != null) viewModel.selectSubtitle(index) else viewModel.selectAutoSubtitle()
+                                if (index != null) {
+                                    viewModel.selectSubtitle(index, selectedVersion)
+                                } else {
+                                    viewModel.selectAutoSubtitle()
+                                }
                             },
                             onPersonClick = onPersonClick,
                             onItemDetailClick = onItemDetailClick,

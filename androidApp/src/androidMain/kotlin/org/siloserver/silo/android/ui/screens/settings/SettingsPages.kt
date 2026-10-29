@@ -93,9 +93,7 @@ fun SettingsInterfaceScreen(viewModel: SettingsViewModel, onBackClick: () -> Uni
         item(key = "cards") {
             MediaCardsSettings(
                 state = state.cardPresentation,
-                onPresetSelected = viewModel::setCardPreset,
                 onPosterSizeSelected = viewModel::setCardPosterSize,
-                onCaptionSelected = viewModel::setCardCaption,
                 onDeviceOnlyChanged = viewModel::setCardDeviceOnly,
                 onUseProfileDefault = viewModel::useCardProfileDefault,
             )
@@ -273,6 +271,8 @@ fun SettingsSubtitlesScreen(viewModel: SettingsViewModel, onBackClick: () -> Uni
                 previewAppearance = state.effectiveSubtitleAppearance,
                 subtitleMatchesDevice = state.subtitleMatchesDevice,
                 onSubtitleMatchesDeviceChanged = viewModel::setSubtitleMatchesDevice,
+                subtitleUsesDeviceOverride = state.subtitleUsesDeviceOverride,
+                onSubtitleDeviceOverrideChanged = viewModel::setSubtitleDeviceOverrideEnabled,
             )
         }
         item(key = "text") {

@@ -53,6 +53,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import org.koin.android.ext.koin.androidContext
@@ -206,6 +207,31 @@ val playerInfraModule = module {
         )
     }
 
+    // Manual audio and subtitle choices remembered per series on the server.
+    // App-scoped so a retry outlives the player that made the choice.
+    single<org.siloserver.silo.common.settings.SeriesTrackChoiceWriter> {
+        val v2 = get<org.siloserver.silo.network.apiv2.SettingsV2Api>()
+        org.siloserver.silo.common.settings.DefaultSeriesTrackChoiceWriter(
+            putSubtitle = { key, choice, owner -> v2.putSubtitlePreference(key, choice, owner) },
+            deleteSubtitle = { key, owner -> v2.deleteSubtitlePreference(key, owner) },
+            putAudio = { key, choice, owner -> v2.putAudioPreference(key, choice, owner) },
+            deleteAudio = { key, owner -> v2.deleteAudioPreference(key, owner) },
+            captureOwner = {
+                get<TokenManager>().snapshotCurrentScope()?.takeIf { !it.profileId.isNullOrBlank() }
+            },
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+            identityChanges = get<org.siloserver.silo.network.IdentityTransitionBarrier>().transitions,
+            // Each successful probe: the server is back, or the app returned
+            // to the foreground and checked it again.
+            resumeSignals = get<ServerReachabilityMonitor>().state
+                .filter { it.status == org.siloserver.silo.common.network.ServerReachabilityStatus.Reachable }
+                .map { it.lastCheckedAtMs }
+                .distinctUntilChanged()
+                .map { },
+            autoResets = org.siloserver.silo.common.settings.SharedPreferencesSeriesAutoResetStore(androidContext()),
+        )
+    }
+
     // Per-profile DataStore-backed settings store with legacy SharedPreferences
     // migration. We resolve the active profile on demand via ProfileRepository,
     // and the current server URL via TokenManager — both of which the auth
@@ -255,7 +281,7 @@ val playerInfraModule = module {
         )
     }
 
-    // Card-presentation preference (poster size + captions). Same lifetime
+    // Card-presentation preference (poster size). Same lifetime
     // rationale as the overlay store; the extra lambdas feed the last-known
     // SharedPreferences cache identity (server|profile|family|device).
     single<CardPresentationStore> {

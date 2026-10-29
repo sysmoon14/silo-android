@@ -26,10 +26,8 @@ import org.siloserver.silo.model.download.effectiveDefault
 import org.siloserver.silo.model.download.labelFor
 import org.siloserver.silo.repository.DownloadsRepository
 import org.siloserver.silo.model.notifications.NotificationPreferencesUpdate
-import org.siloserver.silo.model.settings.CardCaption
 import org.siloserver.silo.model.settings.CardPosterSize
 import org.siloserver.silo.model.settings.CardPresentation
-import org.siloserver.silo.model.settings.CardPresentationPreset
 import org.siloserver.silo.model.settings.CellularQuality
 import org.siloserver.silo.model.settings.QualityPresets
 import org.siloserver.silo.network.ApiResult
@@ -111,6 +109,8 @@ data class SettingsUiState(
     val dolbyVisionEnabled: Boolean = true,
     val dvProfile7HDR10Fallback: Boolean = false,
     val subtitleMatchesDevice: Boolean = false,
+    /** "Only on This Device": subtitle edits stay on this device instead of the profile. */
+    val subtitleUsesDeviceOverride: Boolean = false,
     val showAudiobooks: Boolean = false,
     val subtitleAppearance: org.siloserver.silo.model.settings.SubtitleAppearance =
         org.siloserver.silo.model.settings.SubtitleAppearance.DEFAULT,
@@ -374,6 +374,9 @@ class SettingsViewModel(
         playerSettingsStore.subtitleMatchesDeviceFlow.onEach { enabled ->
             _uiState.update { it.copy(subtitleMatchesDevice = enabled) }
         }.launchIn(viewModelScope)
+        playerSettingsStore.subtitleUsesDeviceOverrideFlow.onEach { enabled ->
+            _uiState.update { it.copy(subtitleUsesDeviceOverride = enabled) }
+        }.launchIn(viewModelScope)
         playerSettingsStore.showAudiobooksFlow.onEach { enabled ->
             _uiState.update { it.copy(showAudiobooks = enabled) }
         }.launchIn(viewModelScope)
@@ -486,19 +489,9 @@ class SettingsViewModel(
         viewModelScope.launch { cardPresentationStore.hydrateIfNeeded() }
     }
 
-    fun setCardPreset(preset: CardPresentationPreset) {
-        setCardPresentation(preset.presentation)
-    }
-
     fun setCardPosterSize(size: CardPosterSize) {
         setCardPresentation(
             _uiState.value.cardPresentation.presentation.copy(posterSize = size),
-        )
-    }
-
-    fun setCardCaption(caption: CardCaption) {
-        setCardPresentation(
-            _uiState.value.cardPresentation.presentation.copy(caption = caption),
         )
     }
 
@@ -672,6 +665,10 @@ class SettingsViewModel(
 
     fun setSubtitleMatchesDevice(enabled: Boolean) {
         viewModelScope.launch { playerSettingsStore.setSubtitleMatchesDevice(enabled) }
+    }
+
+    fun setSubtitleDeviceOverrideEnabled(enabled: Boolean) {
+        viewModelScope.launch { playerSettingsStore.setSubtitleDeviceOverrideEnabled(enabled) }
     }
 
     fun setShowAudiobooks(enabled: Boolean) {

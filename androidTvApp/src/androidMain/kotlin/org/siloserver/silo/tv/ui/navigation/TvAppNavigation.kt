@@ -49,6 +49,8 @@ import org.siloserver.silo.tv.ui.screens.collections.TvCollectionDetailScreen
 import org.siloserver.silo.tv.ui.screens.detail.TvItemDetailScreen
 import org.siloserver.silo.tv.ui.screens.people.TvPersonDetailScreen
 import org.siloserver.silo.tv.ui.screens.library.TvLibraryCollectionDetailScreen
+import org.siloserver.silo.tv.ui.screens.library.TvSectionBrowseScreen
+import org.siloserver.silo.viewmodel.SectionBrowseArgs
 import org.siloserver.silo.tv.ui.screens.player.TvPlayerScreen
 import org.siloserver.silo.tv.ui.screens.profiles.TvProfileSelectionScreen
 import org.siloserver.silo.tv.ui.screens.servers.TvServerListScreen
@@ -78,6 +80,8 @@ import org.siloserver.silo.tv.cast.TvSiloCastReceiver
 import org.siloserver.silo.common.profiles.ProfileLaunchPreferences
 import org.siloserver.silo.tv.profiles.TvActiveProfileReset
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
+import org.siloserver.silo.tv.profiles.TvDeepLinkProfileSwitch
+import org.siloserver.silo.tv.profiles.tvDeepLinkProfileId
 import org.siloserver.silo.common.player.PlaybackSessionLifecycle
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
@@ -418,6 +422,47 @@ private val preMainAuthRoutes: Set<String> = setOf(
     TvRoute.EditProfile.ROUTE,
 )
 
+/** What a queued content link that names a profile does next; see [tvLinkProfileStep]. */
+internal enum class TvLinkProfileStep {
+    /** Its profile is active: open the link as usual. */
+    Open,
+
+    /** Make its profile active first. */
+    Switch,
+
+    /** Leave it queued until the current flow settles. */
+    Wait,
+
+    /** Who's Watching opened another profile: the link was for someone else. */
+    Drop,
+}
+
+/**
+ * Decides how a content link naming [linkProfileId] proceeds from [route].
+ *
+ * [returnPending] is the return rule replacing the profile right now; its
+ * collector opens the link's profile itself. [pickerOffered] means the link
+ * was already handed to Who's Watching because its profile needs a PIN.
+ */
+internal fun tvLinkProfileStep(
+    route: String,
+    linkProfileId: String,
+    activeProfileId: String?,
+    returnPending: Boolean,
+    pickerOffered: Boolean,
+): TvLinkProfileStep {
+    if (returnPending) return TvLinkProfileStep.Wait
+    val onPicker = route == TvRoute.ProfileSelection.route
+    // Signing in, setting up a server, or adding a profile: not ours to interrupt.
+    if (!onPicker && route in preMainAuthRoutes) return TvLinkProfileStep.Wait
+    if (pickerOffered) {
+        if (onPicker) return TvLinkProfileStep.Wait
+        return if (activeProfileId == linkProfileId) TvLinkProfileStep.Open else TvLinkProfileStep.Drop
+    }
+    if (!onPicker && activeProfileId == linkProfileId) return TvLinkProfileStep.Open
+    return TvLinkProfileStep.Switch
+}
+
 /** First-run routes, drawn transparent over the shared [MarqueeBackdrop]. */
 private val tvMarqueeRoutes: Set<String> = setOf(
     TvRoute.ServerSetup.route,
@@ -487,8 +532,70 @@ fun TvAppNavigation(
     val profileAwayTracker: ProfileAwayTracker = koinInject()
     val profileLaunchPreferences: ProfileLaunchPreferences = koinInject()
     val activeProfileReset: TvActiveProfileReset = koinInject()
+    val linkProfileSwitch: TvDeepLinkProfileSwitch = koinInject()
     val remotePlaybackIdentityManager: RemotePlaybackIdentityManager = koinInject()
     val playbackLifecycle: PlaybackSessionLifecycle = koinInject()
+
+    // What follows choosing a profile, on the picker or from a deep link that
+    // names one: the away interval ends, and per-profile state reloads.
+    val onProfileChosen: () -> Unit = {
+        // A chosen profile ends any away interval (silo-apple `remember`),
+        // which lets Watch Next and held links through.
+        profileLaunchPreferences.clearBackgroundedAt()
+        // Re-seed for the newly selected profile so the launcher row
+        // reflects this profile's continue-watching / next-up rather
+        // than whatever was last synced.
+        watchNextSeeder.seedNow()
+        watchNextSeeder.enqueuePeriodic()
+        // The switch-profile paths cleared the seek intervals; the
+        // identity flow only reloads when the profile id changes, so
+        // re-selecting the same profile needs this.
+        scope.launch {
+            seekIntervalStore.hydrateIfNeeded()
+            // Same for spoiler protection, which must be back on
+            // before the new session's rows show episode stills.
+            episodeSpoilerStore.hydrateIfNeeded()
+            titleArtStore.hydrateIfNeeded()
+        }
+    }
+
+    fun hasMainEntry(): Boolean =
+        runCatching { navController.getBackStackEntry(TvRoute.Main.route) }.isSuccess
+
+    // Before a link replaces the profile, leave the previous profile's
+    // screens, as Switch Profile does: a player still on screen when the
+    // identity changes tears itself down mid-navigation. Its final report
+    // and stop land (bounded) under the profile that played it.
+    suspend fun leaveForLinkProfile() {
+        if (hasMainEntry() && navController.currentDestination?.route != TvRoute.Main.route) {
+            navController.popBackStack(TvRoute.Main.route, inclusive = false)
+            withTimeoutOrNull(PROFILE_COVER_MAX_MS) {
+                navController.visibleEntries.first { entries ->
+                    entries.isNotEmpty() && entries.all { it.destination.route == TvRoute.Main.route }
+                }
+            }
+        }
+        withTimeoutOrNull(CAST_PLAYBACK_TEARDOWN_TIMEOUT_MS) { playbackLifecycle.awaitPendingStop() }
+    }
+
+    // Opens Main for the profile a deep link just made active. Main is
+    // rebuilt rather than reused so nothing on screen belongs to the
+    // previous profile; the still-queued link then opens over it.
+    suspend fun openLinkProfile() {
+        onProfileChosen()
+        // Main is the root of an authenticated stack; from Who's Watching the
+        // picker is.
+        val root = if (hasMainEntry()) TvRoute.Main.route else TvRoute.ProfileSelection.route
+        navController.navigate(TvRoute.Main.route) {
+            popUpTo(root) { inclusive = true }
+            launchSingleTop = true
+        }
+        withTimeoutOrNull(PROFILE_COVER_MAX_MS) {
+            navController.visibleEntries.first { entries ->
+                entries.isNotEmpty() && entries.all { it.destination.route == TvRoute.Main.route }
+            }
+        }
+    }
 
     // Android can restore Silo's previous back stack over the start route
     // MainTvActivity chose: after a configuration change while Silo was away,
@@ -552,6 +659,18 @@ fun TvAppNavigation(
             if (!profileLaunchPreferences.requiresSelectionAfterBackground()) {
                 profileAwayTracker.onSelectionHandled()
                 return@collect
+            }
+            // Silo was brought back by a content link that names a profile
+            // without a PIN: open it under the cover instead of Who's Watching.
+            val linkProfileId = pendingDeepLink.value?.tvDeepLinkProfileId()
+            if (linkProfileId != null) {
+                leaveForLinkProfile()
+                if (linkProfileSwitch.activate(linkProfileId, selectionRequired = true)) {
+                    Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link opened its profile on return")
+                    openLinkProfile()
+                    profileAwayTracker.onSelectionHandled()
+                    return@collect
+                }
             }
             // Leave the profile's screens before clearing its state (see
             // onSwitchProfile). MainTvActivity.onStop already flushed pending
@@ -619,12 +738,17 @@ fun TvAppNavigation(
         // looping forever.
         var attemptUri: Uri? = null
         var attempts = 0
+        // The profile link last handed to Who's Watching because its profile
+        // needs a PIN. Choosing another profile there drops it.
+        var linkProfilePickerOffered: Uri? = null
         kotlinx.coroutines.flow.combine(
             pendingDeepLink,
             navController.currentBackStackEntryFlow,
             // Re-runs a held link once a chosen profile ends the away interval.
             profileLaunchPreferences.state,
-        ) { uri, entry, _ -> uri to entry }.collect { (uri, entry) ->
+            // Re-runs a link held while the return rule opened its profile.
+            profileAwayTracker.selectionRequired,
+        ) { uri, entry, _, _ -> uri to entry }.collect { (uri, entry) ->
             if (uri == null) return@collect
             if (uri != attemptUri) {
                 attemptUri = uri
@@ -664,6 +788,59 @@ fun TvAppNavigation(
             // immediately). Immediate consumption also means a queued link can
             // never go stale on an authenticated session.
             val route = entry.destination.route
+            // A link that names a profile (`?profile=<id>`) opens in it.
+            val linkProfileId = uri.tvDeepLinkProfileId()
+            if (linkProfileId != null && route != null) {
+                when (
+                    tvLinkProfileStep(
+                        route = route,
+                        linkProfileId = linkProfileId,
+                        activeProfileId = tokenManager.getProfileId(),
+                        returnPending = profileAwayTracker.selectionRequired.value,
+                        pickerOffered = linkProfilePickerOffered == uri,
+                    )
+                ) {
+                    TvLinkProfileStep.Wait -> return@collect
+                    TvLinkProfileStep.Open -> Unit
+                    TvLinkProfileStep.Drop -> {
+                        Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link dropped: another profile was chosen")
+                        pendingDeepLink.value = null
+                        return@collect
+                    }
+                    TvLinkProfileStep.Switch -> {
+                        // A phone-launched title owns identity until it ends;
+                        // the link waits rather than replace it.
+                        if (tokenManager.hasTemporaryScope()) return@collect
+                        val onPicker = route == TvRoute.ProfileSelection.route
+                        if (!onPicker) linkProfileSwitch.beginCover()
+                        try {
+                            if (!onPicker) leaveForLinkProfile()
+                            val opened = linkProfileSwitch.activate(
+                                linkProfileId,
+                                selectionRequired = onPicker || profileLaunchPreferences.requiresSelectionAfterBackground(),
+                            )
+                            if (opened) {
+                                Log.i(MainTvActivity.DEEP_LINK_TAG, "deep link opened its profile")
+                                openLinkProfile()
+                                return@collect
+                            }
+                            // The profile needs its PIN (or is unknown): Who's
+                            // Watching decides, with the link held for it.
+                            linkProfilePickerOffered = uri
+                            if (!onPicker) {
+                                navController.navigate(TvRoute.ProfileSelection.route) {
+                                    popUpTo(0) { inclusive = true }
+                                    launchSingleTop = true
+                                }
+                                activeProfileReset.clearActiveProfile()
+                            }
+                        } finally {
+                            linkProfileSwitch.endCover()
+                        }
+                        return@collect
+                    }
+                }
+            }
             if (route == null || route in preMainAuthRoutes) return@collect // unauthenticated flow: keep queued until Main
             // Profile Selection (silo-apple `handleDeepLink`): a link that
             // arrives while Silo is returning must not open the previous
@@ -1017,26 +1194,9 @@ fun TvAppNavigation(
         composable(TvRoute.ProfileSelection.route) {
             TvProfileSelectionScreen(
                 onProfileSelected = {
-                    // A chosen profile ends any away interval (silo-apple
-                    // `remember`), which lets Watch Next and held links through.
-                    profileLaunchPreferences.clearBackgroundedAt()
+                    onProfileChosen()
                     navController.navigate(TvRoute.Main.route) {
                         popUpTo(TvRoute.ProfileSelection.route) { inclusive = true }
-                    }
-                    // Re-seed for the newly selected profile so the launcher row
-                    // reflects this profile's continue-watching / next-up rather
-                    // than whatever was last synced.
-                    watchNextSeeder.seedNow()
-                    watchNextSeeder.enqueuePeriodic()
-                    // The switch-profile paths cleared the seek intervals; the
-                    // identity flow only reloads when the profile id changes, so
-                    // re-selecting the same profile needs this.
-                    scope.launch {
-                        seekIntervalStore.hydrateIfNeeded()
-                        // Same for spoiler protection, which must be back on
-                        // before the new session's rows show episode stills.
-                        episodeSpoilerStore.hydrateIfNeeded()
-                        titleArtStore.hydrateIfNeeded()
                     }
                 },
                 onAddProfile = {
@@ -1126,6 +1286,11 @@ fun TvAppNavigation(
                 },
                 onOpenCollectionDetail = { collectionId, title ->
                     navController.navigate(TvRoute.CollectionDetail(collectionId, title).route) {
+                        launchSingleTop = true
+                    }
+                },
+                onOpenSectionBrowse = { sectionId, title, libraryId, mediaScope ->
+                    navController.navigate(TvRoute.SectionBrowse(sectionId, title, libraryId, mediaScope).route) {
                         launchSingleTop = true
                     }
                 },
@@ -1805,6 +1970,55 @@ fun TvAppNavigation(
                 onShuffleStarted = { shuffle ->
                     navController.navigateToTvShufflePlayback(shuffle, null, lastPlaybackNavigation)
                 },
+            )
+        }
+
+        composable(
+            route = TvRoute.SectionBrowse.ROUTE,
+            arguments = listOf(
+                navArgument(TvRoute.SectionBrowse.ARG_SECTION_ID) { type = NavType.StringType },
+                navArgument(TvRoute.SectionBrowse.ARG_TITLE) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument(TvRoute.SectionBrowse.ARG_LIBRARY_ID) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument(TvRoute.SectionBrowse.ARG_MEDIA_SCOPE) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+            ),
+        ) { backStack ->
+            val sectionId = backStack.arguments
+                ?.getString(TvRoute.SectionBrowse.ARG_SECTION_ID)
+                ?.takeIf { it.isNotBlank() }
+                ?: return@composable
+            val libraryId = backStack.arguments?.getString(TvRoute.SectionBrowse.ARG_LIBRARY_ID)?.toIntOrNull()
+            TvSectionBrowseScreen(
+                args = SectionBrowseArgs(
+                    sectionId = sectionId,
+                    title = backStack.arguments?.getString(TvRoute.SectionBrowse.ARG_TITLE).orEmpty(),
+                    libraryId = libraryId,
+                    mediaScope = backStack.arguments?.getString(TvRoute.SectionBrowse.ARG_MEDIA_SCOPE)
+                        ?.takeIf { it in setOf("movie", "series") },
+                ),
+                // An episode opens its series at that episode, as Home's rows do.
+                onItemClick = { item ->
+                    val seriesId = item.seriesId?.takeIf { it.isNotBlank() }
+                    if (item.type.equals("episode", ignoreCase = true) && seriesId != null && item.seasonNumber != null) {
+                        navController.navigateToTvItemDetail(
+                            contentId = seriesId,
+                            seasonNumber = item.seasonNumber,
+                            episodeContentId = item.contentId,
+                            libraryId = libraryId,
+                        )
+                    } else {
+                        navController.navigateToTvItemDetail(item.contentId, libraryId = libraryId)
+                    }
+                },
+                onBack = { navController.popBackStack() },
             )
         }
 
