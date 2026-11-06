@@ -10,6 +10,9 @@ import androidx.media3.exoplayer.trackselection.ExoTrackSelection
 import androidx.media3.exoplayer.upstream.DefaultAllocator
 import org.siloserver.silo.player.DolbyVisionDetection
 
+// Covers the longest TV audio warm-up (8s) plus its settle time.
+private const val BACK_BUFFER_MS = 10_000
+
 /**
  * Media3 load control with a bitrate-scaled, heap-bounded allocation target.
  *
@@ -34,8 +37,13 @@ class SiloLoadControl(
     C.LENGTH_UNSET,
     policy.prioritizeTimeOverSizeThresholds,
     policy.prioritizeTimeOverSizeThresholds,
-    0,
-    false,
+    // Keep the last few seconds behind the playhead, from the keyframe
+    // before them, so a short seek back plays from memory. Without it every
+    // backward seek reloads, and the stall drops HDMI audio: the TV's audio
+    // warm-up seeks back over exactly this window, and a 10s skip-back
+    // lands instantly too.
+    BACK_BUFFER_MS,
+    true,
 ) {
     @Volatile private var depthMs: Int = policy.minBufferMs
 
