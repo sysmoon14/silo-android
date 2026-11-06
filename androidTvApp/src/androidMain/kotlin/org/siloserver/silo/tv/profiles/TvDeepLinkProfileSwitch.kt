@@ -120,6 +120,11 @@ class TvDeepLinkProfileSwitch(
         selectProfile(profileId, commitScope) == ProfileCommitResult.Committed
     }
 
+    // A server can hold several accounts (#795), so the saved account must
+    // match too, under the same rule as AuthScopeSnapshot.isSameIdentityAs.
     private fun AuthScopeSnapshot.isSameAccountAs(other: AuthScopeSnapshot?): Boolean =
-        other != null && other.serverId == serverId && other.credentialEpoch == credentialEpoch
+        other != null &&
+            other.serverId == serverId &&
+            (accountId == null || other.accountId == null || other.accountId == accountId) &&
+            other.credentialEpoch == credentialEpoch
 }

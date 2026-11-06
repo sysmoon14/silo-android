@@ -24,6 +24,8 @@ class TvDeepLinkProfileSwitchTest {
         var commit: ProfileCommitResult = ProfileCommitResult.Committed,
     ) {
         var generation = 1L
+        var accountId: String? = "account-a"
+        var accountAfterClear: String? = "account-a"
         val calls = mutableListOf<String>()
 
         fun scope() = AuthScopeSnapshot(
@@ -33,6 +35,7 @@ class TvDeepLinkProfileSwitchTest {
             profileToken = null,
             identityGeneration = generation,
             credentialEpoch = 7L,
+            accountId = accountId,
         )
 
         val switch = TvDeepLinkProfileSwitch(
@@ -48,6 +51,7 @@ class TvDeepLinkProfileSwitchTest {
                 calls += "clear"
                 active = null
                 generation++
+                accountId = accountAfterClear
             },
             selectProfile = { id, scope ->
                 calls += "select:$id@${scope?.identityGeneration}"
@@ -126,6 +130,15 @@ class TvDeepLinkProfileSwitchTest {
 
         assertFalse(h.switch.activate(guest.id, selectionRequired = false))
         assertEquals(listOf("list"), h.calls)
+    }
+
+    @Test
+    fun aSwitchThatLandsOnAnotherAccountOfTheServerIsNotCommitted() = runTest {
+        val h = Harness(active = kids.id, profiles = household())
+        h.accountAfterClear = "account-b"
+
+        assertFalse(h.switch.activate(guest.id, selectionRequired = false))
+        assertEquals(listOf("list", "clear"), h.calls)
     }
 
     @Test
