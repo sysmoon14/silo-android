@@ -149,6 +149,15 @@ object PlaybackSettingsKeys {
     const val ResumeRewindSeconds = "player.resume_rewind_seconds"
 
     /**
+     * Local-only per-device setting: seconds to hold a freshly started item
+     * behind the loading screen, muted, before seeking back to where it
+     * started. Gives an HDMI soundbar or AVR time to lock onto the audio
+     * stream so the opening seconds are not lost. Default 0 = off. Not
+     * server-registered, so it stays out of [DeviceSettings].
+     */
+    const val AudioWarmupSeconds = "player.audio_warmup_seconds"
+
+    /**
      * Local-only per-profile setting: number of consecutive auto-advanced
      * episodes allowed before the "Still watching?" prompt gates the next one
      * (pass-out protection). Default 3; 0 = off (never prompt). Not

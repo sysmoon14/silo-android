@@ -315,6 +315,7 @@ fun TvSettingsScreen(
         onTrueBlackBarsChanged = viewModel::onTrueBlackBarsChanged,
         onResumeRewindSecondsChanged = viewModel::onResumeRewindSecondsChanged,
         onPassOutThresholdChanged = viewModel::onPassOutThresholdChanged,
+        onAudioWarmupSecondsChanged = viewModel::onAudioWarmupSecondsChanged,
         onNextUpPromptSecondsChanged = viewModel::onNextUpPromptSecondsChanged,
         onResetPlaybackOverrides = viewModel::resetPlaybackOverrides,
         onUseProfileSetting = viewModel::onUseProfileSetting,
@@ -470,6 +471,7 @@ private fun SettingsSplitLayout(
     onTrueBlackBarsChanged: (Boolean) -> Unit,
     onResumeRewindSecondsChanged: (Int) -> Unit,
     onPassOutThresholdChanged: (Int) -> Unit,
+    onAudioWarmupSecondsChanged: (Int) -> Unit,
     onNextUpPromptSecondsChanged: (Int) -> Unit,
     onResetPlaybackOverrides: () -> Unit,
     onUseProfileSetting: (String) -> Unit,
@@ -558,6 +560,7 @@ private fun SettingsSplitLayout(
             onTrueBlackBarsChanged = onTrueBlackBarsChanged,
             onResumeRewindSecondsChanged = onResumeRewindSecondsChanged,
             onPassOutThresholdChanged = onPassOutThresholdChanged,
+            onAudioWarmupSecondsChanged = onAudioWarmupSecondsChanged,
             onNextUpPromptSecondsChanged = onNextUpPromptSecondsChanged,
             onResetPlaybackOverrides = onResetPlaybackOverrides,
             onUseProfileSetting = onUseProfileSetting,
@@ -849,6 +852,7 @@ private fun SettingsDetailPane(
     onTrueBlackBarsChanged: (Boolean) -> Unit,
     onResumeRewindSecondsChanged: (Int) -> Unit,
     onPassOutThresholdChanged: (Int) -> Unit,
+    onAudioWarmupSecondsChanged: (Int) -> Unit,
     onNextUpPromptSecondsChanged: (Int) -> Unit,
     onResetPlaybackOverrides: () -> Unit,
     onUseProfileSetting: (String) -> Unit,
@@ -912,6 +916,7 @@ private fun SettingsDetailPane(
             onTrueBlackBarsChanged = onTrueBlackBarsChanged,
                 onResumeRewindSecondsChanged = onResumeRewindSecondsChanged,
                 onPassOutThresholdChanged = onPassOutThresholdChanged,
+                onAudioWarmupSecondsChanged = onAudioWarmupSecondsChanged,
                 onNextUpPromptSecondsChanged = onNextUpPromptSecondsChanged,
                 onResetPlaybackOverrides = onResetPlaybackOverrides,
                 onUseProfileSetting = onUseProfileSetting,
@@ -1198,6 +1203,7 @@ private fun TvPlaybackSettingsPane(
     onTrueBlackBarsChanged: (Boolean) -> Unit,
     onResumeRewindSecondsChanged: (Int) -> Unit,
     onPassOutThresholdChanged: (Int) -> Unit,
+    onAudioWarmupSecondsChanged: (Int) -> Unit,
     onNextUpPromptSecondsChanged: (Int) -> Unit,
     onResetPlaybackOverrides: () -> Unit,
     /** Receives the key of the control going back to the profile's value. */
@@ -1405,10 +1411,17 @@ private fun TvPlaybackSettingsPane(
                     onClick = { activePicker = PlaybackPicker.PassOutThreshold },
                     focusRequester = seekFallbackFocus,
                 )
+                SettingsValueRow(
+                    label = "Audio Warm-up",
+                    value = audioWarmupLabel(state.audioWarmupSeconds),
+                    onClick = { activePicker = PlaybackPicker.AudioWarmup },
+                )
                 SettingsFooterText(
-                    text = "Rewind on Resume skips back when you return to a partly watched title. Still " +
-                        "Watching Prompt sets how many episodes play in a row before Silo asks whether " +
-                        "you're still watching.",
+                    text = "Rewind on Resume skips back when you return to a partly watched title or " +
+                        "unpause after a few seconds. Still Watching Prompt sets how many episodes play " +
+                        "in a row before Silo asks whether you're still watching. Audio Warm-up holds a " +
+                        "new title on the loading screen while your soundbar or receiver locks on, then " +
+                        "starts it from the beginning so you don't miss the opening.",
                 )
             }
         }
@@ -1622,6 +1635,16 @@ private fun TvPlaybackSettingsPane(
             selectedId = state.passOutThreshold.toString(),
             onSelect = { id ->
                 id.toIntOrNull()?.let(onPassOutThresholdChanged)
+                activePicker = null
+            },
+            onDismiss = { activePicker = null },
+        )
+        PlaybackPicker.AudioWarmup -> TvSettingsPickerSheet(
+            title = "Audio Warm-up",
+            options = AudioWarmupOptions.map { PickerOption(it.toString(), audioWarmupLabel(it)) },
+            selectedId = state.audioWarmupSeconds.toString(),
+            onSelect = { id ->
+                id.toIntOrNull()?.let(onAudioWarmupSecondsChanged)
                 activePicker = null
             },
             onDismiss = { activePicker = null },
@@ -2310,6 +2333,7 @@ private enum class PlaybackPicker {
     BufferingQualityMode,
     ResumeRewind,
     PassOutThreshold,
+    AudioWarmup,
 }
 
 /** The label each intro-skip mode is offered under. The copy is fixed by the contract. */
@@ -3039,6 +3063,9 @@ private fun invertedRowBorder() = ClickableSurfaceDefaults.border(
 private val ResumeRewindOptions = listOf(0, 3, 5, 7, 10, 15, 20, 30)
 private val PassOutThresholdOptions = listOf(0, 2, 3, 4, 5)
 
+// Audio warm-up hold before seeking back to the start point (0 = off).
+private val AudioWarmupOptions = listOf(0, 1, 2, 3, 4, 5, 6, 8)
+
 // Up-Next prompt timing (seconds before end; 0 = at end). Mirrors tvOS.
 private val NextUpPromptOptions = listOf(0, 10, 30, 60, 120)
 
@@ -3047,6 +3074,9 @@ private fun resumeRewindLabel(seconds: Int): String =
 
 private fun passOutThresholdLabel(count: Int): String =
     if (count <= 0) "Off" else "$count"
+
+private fun audioWarmupLabel(seconds: Int): String =
+    if (seconds <= 0) "Off" else "${seconds}s"
 
 private fun nextUpPromptLabel(seconds: Int): String = when {
     seconds <= 0 -> "At end"

@@ -395,6 +395,11 @@ class AndroidPlayerSettingsStore(
             p.intFor(s, PlaybackSettingsKeys.PassOutThreshold, DEFAULT_PASSOUT_THRESHOLD)
         }
 
+    override val audioWarmupSecondsFlow: Flow<Int> =
+        profileScopedFlow(DEFAULT_AUDIO_WARMUP_SECONDS) { p, s ->
+            p.intFor(s, PlaybackSettingsKeys.AudioWarmupSeconds, DEFAULT_AUDIO_WARMUP_SECONDS)
+        }
+
     // Uncapped is spelled 0 locally (Preferences cannot hold a null) and
     // translated to JSON null on the wire — 0 is outside the contract's
     // 100..200000 range, so it can never collide with a real cap.
@@ -682,6 +687,9 @@ class AndroidPlayerSettingsStore(
 
     override suspend fun setPassOutThreshold(value: Int) =
         writeIntLocal(PlaybackSettingsKeys.PassOutThreshold, value.coerceIn(0, 10))
+
+    override suspend fun setAudioWarmupSeconds(value: Int) =
+        writeIntLocal(PlaybackSettingsKeys.AudioWarmupSeconds, value.coerceIn(0, 10))
 
     override suspend fun setSleepTimerDefaultMinutes(value: Int) =
         writeInt(PlaybackSettingsKeys.SleepTimerDefaultMinutes, value.coerceIn(0, 240))
@@ -1083,6 +1091,7 @@ class AndroidPlayerSettingsStore(
                 it.remove(booleanPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.TrueBlackBars))
                 it.remove(intPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.ResumeRewindSeconds))
                 it.remove(intPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.PassOutThreshold))
+                it.remove(intPreferencesKey(scope.keyPrefix + PlaybackSettingsKeys.AudioWarmupSeconds))
             }
             serverSettingsFlusher.flushNow()
             val unsent = serverSettingsFlusher.pendingKeys(scope.profileId).any { it in RemoteDeviceSettings }
@@ -1446,6 +1455,7 @@ class AndroidPlayerSettingsStore(
         // the previous hardcoded AutoPlayGuard threshold of 3).
         const val DEFAULT_RESUME_REWIND_SECONDS = 7
         const val DEFAULT_PASSOUT_THRESHOLD = 3
+        const val DEFAULT_AUDIO_WARMUP_SECONDS = 0
         // The contract's playback.max_bitrate_kbps bounds; a value outside
         // them is rejected as invalid_value and the flush would be dropped.
         const val MIN_BITRATE_KBPS = 100

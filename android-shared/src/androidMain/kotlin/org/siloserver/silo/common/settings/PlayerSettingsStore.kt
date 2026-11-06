@@ -125,6 +125,12 @@ interface PlayerSettingsStore {
     val resumeRewindSecondsFlow: Flow<Int>
     /** Consecutive auto-advances before the "Still watching?" prompt (F2). Default 3; 0 = off. Local-only. */
     val passOutThresholdFlow: Flow<Int>
+    /**
+     * Seconds to hold a new item behind the loading screen, muted, before
+     * seeking back to its start point, so an HDMI audio device can lock on.
+     * Default 0 = off. Local-only.
+     */
+    val audioWarmupSecondsFlow: Flow<Int> get() = flowOf(0)
 
     /**
      * The bandwidth half of the quality choice, orthogonal to
@@ -233,6 +239,8 @@ interface PlayerSettingsStore {
     suspend fun setResumeRewindSeconds(value: Int)
     /** Set the pass-out prompt threshold (clamped 0..10; 0 = off). */
     suspend fun setPassOutThreshold(value: Int)
+    /** Set the audio warm-up seconds (clamped 0..10; 0 = off). */
+    suspend fun setAudioWarmupSeconds(value: Int) = Unit
 
     suspend fun setPreferredQuality(value: String)
 
