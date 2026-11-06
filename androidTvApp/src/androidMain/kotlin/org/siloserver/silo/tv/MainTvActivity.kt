@@ -65,6 +65,8 @@ import org.siloserver.silo.tv.profiles.onlyOpenTileIsActive
 import org.siloserver.silo.tv.profiles.restoreLastTile
 import org.siloserver.silo.tv.watchnext.WatchNextSeeder
 import org.siloserver.silo.common.ui.marquee.SignInHandoff
+import org.siloserver.silo.tv.profiles.TvDeepLinkProfileSwitch
+import org.siloserver.silo.tv.profiles.tvDeepLinkProfileId
 import org.siloserver.silo.common.profiles.ProfileAwayTracker
 import org.siloserver.silo.tv.ui.navigation.TvAppNavigation
 import org.siloserver.silo.tv.ui.navigation.TvRoute
@@ -186,7 +188,11 @@ class MainTvActivity : ComponentActivity() {
             // asks, cover the previous profile's screens until Who's Watching
             // has replaced them (TvAppNavigation lifts the request).
             val profileAwayTracker = remember { get<ProfileAwayTracker>(ProfileAwayTracker::class.java) }
-            val profileCoverVisible by profileAwayTracker.selectionRequired.collectAsState()
+            val returnCoverVisible by profileAwayTracker.selectionRequired.collectAsState()
+            // The same cover while a deep link replaces the profile on screen.
+            val linkProfileSwitch = remember { get<TvDeepLinkProfileSwitch>(TvDeepLinkProfileSwitch::class.java) }
+            val linkCoverVisible by linkProfileSwitch.covering.collectAsState()
+            val profileCoverVisible = returnCoverVisible || linkCoverVisible
 
             SiloTvTheme {
                 val resolvedRoute = startRoute
@@ -420,7 +426,10 @@ class MainTvActivity : ComponentActivity() {
 
         // Automatic reopens the last tile, on whichever server and account
         // (multi-account spec §4.2), when no profile is open here.
-        if (!requiresSelection && !tokenManager.hasTemporaryScope()) {
+        // A link that names a profile opens on the account it arrived on, so
+        // the last tile is not restored over it.
+        val linkNamesProfile = pendingDeepLink.value?.tvDeepLinkProfileId() != null
+        if (!requiresSelection && !tokenManager.hasTemporaryScope() && !linkNamesProfile) {
             runCatching {
                 restoreLastTile(
                     registry = registry,
@@ -449,6 +458,7 @@ class MainTvActivity : ComponentActivity() {
         }
 
         val profileId = tokenManager.getProfileId()
+        if (openLinkProfileAtLaunch(profileId, processStart)) return TvRoute.Main.route
         if (profileId.isNullOrBlank()) {
             // The open account's only profile, with no PIN, opens without
             // the picker (spec §4.2).
@@ -481,6 +491,33 @@ class MainTvActivity : ComponentActivity() {
         if (processStart) launchPreferences.clearBackgroundedAt()
 
         return TvRoute.Main.route
+    }
+
+    /**
+     * A launch from a content link that names a profile without a PIN
+     * (`silo://play/<id>?profile=<id>`) opens that profile directly, under
+     * the splash, instead of Who's Watching. Returns true when it is the
+     * active profile and the launch can go straight to Main.
+     */
+    private suspend fun openLinkProfileAtLaunch(profileId: String?, processStart: Boolean): Boolean {
+        val linkProfileId = pendingDeepLink.value?.tvDeepLinkProfileId() ?: return false
+        val tokenManager = get<TokenManager>(TokenManager::class.java)
+        // A remote-playback overlay owns identity; Main applies the return rule after it.
+        if (tokenManager.hasTemporaryScope()) return false
+        val launchPreferences = get<ProfileLaunchPreferences>(ProfileLaunchPreferences::class.java)
+        val selectionRequired = profileId.isNullOrBlank() || if (processStart) {
+            launchPreferences.requiresSelectionAtLaunch()
+        } else {
+            get<ProfileAwayTracker>(ProfileAwayTracker::class.java).selectionRequired.value
+        }
+        // On the main thread, like the picker's reset: the profile stores it clears are observed by UI.
+        val opened = get<TvDeepLinkProfileSwitch>(TvDeepLinkProfileSwitch::class.java)
+            .activate(linkProfileId, selectionRequired)
+        if (!opened) return false
+        Log.i(DEEP_LINK_TAG, "deep link opened its profile at launch")
+        // A chosen profile ends any away interval, as a pick on the picker does.
+        launchPreferences.clearBackgroundedAt()
+        return true
     }
 
     private fun launchAuthenticatedStartupWarmup(startRoute: String) {
