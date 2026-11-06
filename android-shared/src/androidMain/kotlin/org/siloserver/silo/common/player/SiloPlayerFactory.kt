@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.video.MediaCodecVideoRenderer
 import androidx.media3.exoplayer.video.VideoRendererEventListener
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.audio.AudioTrackAudioOutputProvider
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.hls.DefaultHlsExtractorFactory
 import androidx.media3.exoplayer.hls.HlsMediaSource
@@ -45,6 +46,7 @@ import org.siloserver.silo.network.localroute.LocalRoutes
 import org.siloserver.silo.common.player.audio.DelayAudioProcessor
 import org.siloserver.silo.common.player.audio.HdmiSinkDtsSupport
 import org.siloserver.silo.common.player.audio.PassthroughSuppressingAudioSink
+import org.siloserver.silo.common.player.audio.PassthroughKeepAliveAudioOutputProvider
 import org.siloserver.silo.common.player.subtitle.OffsetSubtitleParserFactory
 import org.siloserver.silo.common.player.subtitle.PgsSupExtractor
 import org.siloserver.silo.common.player.subtitle.SidecarPlaybackFloor
@@ -247,6 +249,14 @@ class SiloPlayerFactory(
             DefaultAudioSink.Builder(context)
                 .setAudioProcessorChain(
                     DefaultAudioSink.DefaultAudioProcessorChain(delayProcessor),
+                )
+                // Media3's default AudioTrack output, except that a seek keeps
+                // a passthrough stream open, so an AV receiver or soundbar
+                // does not drop out while it relocks.
+                .setAudioOutputProvider(
+                    PassthroughKeepAliveAudioOutputProvider(
+                        AudioTrackAudioOutputProvider.Builder(context).build(),
+                    ),
                 )
                 .build(),
             forceDecode = { format ->
