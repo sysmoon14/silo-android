@@ -1718,6 +1718,7 @@ fun TvPlayerScreen(
                     val provenance = playWhenReadyReconciliationGate
                         .onPlayWhenReadyChanged(playWhenReady, reason)
                     provenance.followUpProgrammaticValue?.let { controller.playWhenReady = it }
+                    if (watchParty == null) viewModel.onPlayerPlayWhenReadyChanged(playWhenReady)
                     val party = watchParty ?: return
                     // Audio focus loss and a noisy route are local holds:
                     // nothing is sent to the room.
@@ -2130,6 +2131,7 @@ fun TvPlayerScreen(
         isPaused = state.isPaused,
         playWhenReadyReconciliationGate = playWhenReadyReconciliationGate,
         playbackSpeed = playbackSpeed,
+        audioWarmupActive = state.audioWarmupActive,
     )
 
     // Apply user subtitle styling whenever the PlayerView mounts or the
@@ -2365,11 +2367,17 @@ fun TvPlayerScreen(
                         },
                     )
                 }
+                // Audio warm-up plays the opening muted behind this cover, then
+                // seeks back; TvPlayerOverlays draws the spinner over it.
+                if (state.audioWarmupActive) {
+                    Box(Modifier.fillMaxSize().background(Color.Black))
+                }
 
                 // The first load shows only the spinner; the controls arrive
                 // with the item's first frame.
                 if (!isInPictureInPictureMode && state.showControls && cleanSeekRate == 0 &&
-                    !state.hudOpen && !state.showNextUp && !state.awaitingFirstFrame
+                    !state.hudOpen && !state.showNextUp && !state.awaitingFirstFrame &&
+                    !state.audioWarmupActive
                 ) {
                     // In a room, transport authority gates what the local
                     // member may drive: a guest who can't seek gets a disabled
@@ -2753,7 +2761,8 @@ fun TvPlayerScreen(
             // the player can't see all wait the same way. An error screen
             // owns the surface, and `fail()` leaves `isBuffering` set.
             loading = state.error == null &&
-                (state.isLoading || state.isBuffering || sessionState is SessionState.Reconnecting),
+                (state.isLoading || state.isBuffering || state.audioWarmupActive ||
+                    sessionState is SessionState.Reconnecting),
             sleepTimerState = sleepTimerState,
             onPlayNextNow = viewModel::playNextEpisodeNow,
             onKeepWatching = viewModel::dismissNextUp,
@@ -2808,7 +2817,23 @@ private fun TvPlayerCommandEffects(
     isPaused: Boolean,
     playWhenReadyReconciliationGate: PlayWhenReadyReconciliationGate,
     playbackSpeed: Double,
+    audioWarmupActive: Boolean,
 ) {
+    // Mute the audio warm-up and put the volume back after it. A PCM stream
+    // keeps the HDMI link busy with silence; a passthrough stream ignores the
+    // volume, and the audio device is muted while it locks on anyway.
+    var volumeBeforeWarmup by remember { mutableStateOf<Float?>(null) }
+    LaunchedEffect(videoBackend, audioWarmupActive) {
+        val player = videoBackend?.player ?: return@LaunchedEffect
+        if (audioWarmupActive) {
+            if (volumeBeforeWarmup == null) volumeBeforeWarmup = player.volume
+            player.volume = 0f
+        } else {
+            volumeBeforeWarmup?.let { player.volume = it }
+            volumeBeforeWarmup = null
+        }
+    }
+
     // Position polling — lifecycle-bounded so it doesn't outlive the screen.
     // Reads the player the backend mounts on, not the MediaController: a mount
     // on the session's ExoPlayer reaches the controller one main-looper hop

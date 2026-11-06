@@ -165,6 +165,8 @@ class TvSettingsViewModel(
         // before the "Still watching?" prompt (0 = off).
         val resumeRewindSeconds: Int = 7,
         val passOutThreshold: Int = 3,
+        // Seconds a new title is held, muted, while the audio device locks on (0 = off).
+        val audioWarmupSeconds: Int = 0,
         // Seconds before the end of an episode to surface the Up-Next prompt
         // (0 = at the very end). Mirrors tvOS `nextUpPromptSeconds`.
         val nextUpPromptSeconds: Int = 10,
@@ -436,6 +438,11 @@ class TvSettingsViewModel(
                         passOutThreshold = snap.passOutThreshold,
                     )
                 }
+            }
+        }
+        viewModelScope.launch {
+            playerSettingsStore.audioWarmupSecondsFlow.collect { seconds ->
+                _uiState.update { it.copy(audioWarmupSeconds = seconds) }
             }
         }
         // Up-Next prompt timing lives outside the 8-arg combine above.
@@ -847,6 +854,10 @@ class TvSettingsViewModel(
 
     fun onPassOutThresholdChanged(value: Int) {
         viewModelScope.launch { playerSettingsStore.setPassOutThreshold(value) }
+    }
+
+    fun onAudioWarmupSecondsChanged(value: Int) {
+        viewModelScope.launch { playerSettingsStore.setAudioWarmupSeconds(value) }
     }
 
     fun onNextUpPromptSecondsChanged(value: Int) {

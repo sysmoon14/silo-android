@@ -881,6 +881,21 @@ class TvPlayerViewModel(
         // Auto-play countdown shown on the Up-Next overlay before the next
         // episode starts (mirrors tvOS CountdownRing default).
         const val NEXT_UP_COUNTDOWN_SECONDS = 10
+        // After the warm-up seek, how long the cover stays up before it waits
+        // on buffering, and the most it waits for the player to refill.
+        const val AUDIO_WARMUP_SETTLE_MS = 300L
+        const val AUDIO_WARMUP_REBUFFER_TIMEOUT_MS = 3_000L
+        // Pauses shorter than this resume where they stopped. Android puts an
+        // idle audio output into standby after about 3 seconds, and waking it
+        // is what costs the HDMI audio device the first moments of sound.
+        const val UNPAUSE_REWIND_MIN_PAUSE_MS = 3_000L
+        // A seek that has not started buffering by this point landed in the
+        // buffer; one that is still buffering after the threshold has stalled
+        // long enough for the audio device to drop out, and gets a warm-up.
+        const val SEEK_BUFFERING_START_WINDOW_MS = 750L
+        const val SEEK_STALL_WARMUP_THRESHOLD_MS = 1_000L
+        // The most a stalled seek's warm-up waits for the player to refill.
+        const val SEEK_REFILL_TIMEOUT_MS = 30_000L
         // A room player sample older than this cannot vouch for buffered media.
         private const val ROOM_SAMPLE_MAX_AGE_MS = 1_000L
         // How long a coordinated source fallback may take before the original
@@ -1109,6 +1124,16 @@ class TvPlayerViewModel(
     private var seekSequence = 0L
     private var activeSeekId: Long? = null
     private var hasRenderedFirstFrame = false
+    // Audio warm-up: where the new item started (source seconds), set when
+    // its load publishes and consumed by its first frame.
+    private var pendingWarmupAnchorSec: Double? = null
+    private var audioWarmupJob: Job? = null
+    // True while the warm-up issues its own seek back, so that seek is not
+    // mistaken for the viewer moving on.
+    private var issuingWarmupSeek = false
+    // When the player last stopped playing on the viewer's (or anyone's)
+    // pause, for the rewind on unpause. Null while playing.
+    private var pausedAtElapsedMs: Long? = null
     // Mounted-transport extent reported by the screen's position poll: whether
     // the current Media3 window is seekable and how far it reaches in
     // player-local time (-1 = unknown/unset). Feeds
@@ -1360,6 +1385,9 @@ class TvPlayerViewModel(
         // controls, only the spinner. A retry, renewal, reconnect or replan
         // keeps the content id, so only a new item brings that state back.
         val startedContentId: String? = null,
+        // A new item is playing muted behind the loading screen so the HDMI
+        // audio device can lock on; it then seeks back to its start point.
+        val audioWarmupActive: Boolean = false,
     ) {
         /** The current item has not shown its first frame yet; see [startedContentId]. */
         val awaitingFirstFrame: Boolean
@@ -1903,6 +1931,10 @@ class TvPlayerViewModel(
         .stateIn(viewModelScope, SharingStarted.Eagerly, 1.0)
     val introSkipMode: StateFlow<IntroSkipMode> = playerSettingsStore.introSkipModeFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, IntroSkipMode.Default)
+    private val audioWarmupSeconds: StateFlow<Int> = playerSettingsStore.audioWarmupSecondsFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+    private val resumeRewindSeconds: StateFlow<Int> = playerSettingsStore.resumeRewindSecondsFlow
+        .stateIn(viewModelScope, SharingStarted.Eagerly, 0)
     val autoPlayNextEnabled: StateFlow<Boolean> = playerSettingsStore.autoPlayNextFlow
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
     // Per-profile "Still watching?" threshold (default 3; 0 = off).
@@ -2608,6 +2640,8 @@ class TvPlayerViewModel(
                 ?: preferredQuality,
         )
         hasRenderedFirstFrame = false
+        cancelAudioWarmup()
+        pausedAtElapsedMs = null
         resetSeekRecoveryForContentChange()
         transportMountGate.beginLoad()
         introAutoSkipController.reset()
@@ -2902,6 +2936,16 @@ class TvPlayerViewModel(
                                     // room's command after attach plays it.
                                     roomPreparedRevision = requestRoom.selectionRevision
                                     roomPlaying = false
+                                }
+                                // Only a new item warms up: a retry, renewal or
+                                // version switch of what is already showing
+                                // keeps its audio going.
+                                pendingWarmupAnchorSec = result.sourceStartPositionSeconds.takeIf {
+                                    requestRoom == null && audioWarmupSeconds.value > 0 &&
+                                        _uiState.value.startedContentId != contentId
+                                }
+                                if (pendingWarmupAnchorSec != null) {
+                                    _uiState.update { it.copy(audioWarmupActive = true) }
                                 }
                                 _uiState.update {
                                     it.copy(
@@ -3809,11 +3853,13 @@ class TvPlayerViewModel(
      */
     fun onAudioOnlyPlaybackStarted(transportMountNonce: Long) {
         if (transportMountNonce != _uiState.value.transportMountNonce) return
+        startAudioWarmupTimer()
         _uiState.update { it.copy(startedContentId = it.contentId) }
     }
 
     fun onFirstVideoFrameRendered(transportMountNonce: Long?) {
         if (transportMountNonce != _uiState.value.transportMountNonce) return
+        startAudioWarmupTimer()
         hasRenderedFirstFrame = true
         _uiState.update { it.copy(startedContentId = it.contentId) }
         playbackSessionManager.reportFirstVideoFrame(_uiState.value.stats)
@@ -4176,6 +4222,142 @@ class TvPlayerViewModel(
         _uiState.update { it.copy(isBuffering = isBuffering || outageRecoveryJob?.isActive == true) }
     }
 
+    /**
+     * The new item is now playing behind the loading screen. Give the HDMI
+     * audio device the configured time to lock onto the stream, then seek back
+     * to where the item started so the opening plays with sound.
+     */
+    private fun startAudioWarmupTimer() {
+        val anchor = pendingWarmupAnchorSec ?: return
+        pendingWarmupAnchorSec = null
+        val contentAtStart = _uiState.value.contentId
+        launchAudioWarmup { runAudioWarmup(anchor, contentAtStart) }
+    }
+
+    /**
+     * A native seek was just sent to the player. If it stalls long enough to
+     * rebuffer (a skip past what is loaded), the audio output goes quiet and
+     * the HDMI audio device has to lock on again when it resumes, swallowing
+     * the first seconds at the new position. So once a stall passes
+     * [SEEK_STALL_WARMUP_THRESHOLD_MS], cover and mute the player, let it play
+     * the warm-up seconds after it refills, and seek back to the exact target.
+     * A seek that lands in the buffer resumes at once and is left alone.
+     */
+    private fun watchSeekForAudioDropout(targetSourceSec: Double) {
+        if (issuingWarmupSeek) return
+        val state = _uiState.value
+        if (roomId != null || audioWarmupSeconds.value <= 0) return
+        val contentAtStart = state.contentId
+        // A seek before the new item's first frame (an intro auto-skip from
+        // 0:00, say): the start-up warm-up has not begun, so it warms up at
+        // the new spot instead.
+        if (pendingWarmupAnchorSec != null) {
+            pendingWarmupAnchorSec = targetSourceSec
+            return
+        }
+        // A seek during a warm-up: the audio device has still not locked on,
+        // so the warm-up moves to the new spot rather than seeking back to
+        // the old one. The cover stays up throughout.
+        if (audioWarmupJob != null || state.audioWarmupActive) {
+            launchAudioWarmup {
+                if (!_uiState.value.audioWarmupActive) _uiState.update { it.copy(audioWarmupActive = true) }
+                delay(AUDIO_WARMUP_SETTLE_MS)
+                withTimeoutOrNull(SEEK_REFILL_TIMEOUT_MS) {
+                    _uiState.first { !it.isBuffering }
+                } ?: return@launchAudioWarmup
+                runAudioWarmup(targetSourceSec, contentAtStart)
+            }
+            return
+        }
+        if (state.awaitingFirstFrame) return
+        launchAudioWarmup {
+            withTimeoutOrNull(SEEK_BUFFERING_START_WINDOW_MS) {
+                _uiState.first { it.isBuffering }
+            } ?: return@launchAudioWarmup
+            val refilledQuickly = withTimeoutOrNull(SEEK_STALL_WARMUP_THRESHOLD_MS) {
+                _uiState.first { !it.isBuffering }
+            } != null
+            if (refilledQuickly || _uiState.value.contentId != contentAtStart) return@launchAudioWarmup
+            _uiState.update { it.copy(audioWarmupActive = true) }
+            withTimeoutOrNull(SEEK_REFILL_TIMEOUT_MS) {
+                _uiState.first { !it.isBuffering }
+            } ?: return@launchAudioWarmup
+            runAudioWarmup(targetSourceSec, contentAtStart)
+        }
+    }
+
+    /** Runs [block] as the one warm-up; the cover lifts when it ends however it ends. */
+    private fun launchAudioWarmup(block: suspend () -> Unit) {
+        audioWarmupJob?.cancel()
+        audioWarmupJob = viewModelScope.launch {
+            val self = coroutineContext[Job]
+            try {
+                block()
+            } finally {
+                if (audioWarmupJob === self) {
+                    audioWarmupJob = null
+                    if (_uiState.value.audioWarmupActive) {
+                        _uiState.update { it.copy(audioWarmupActive = false) }
+                    }
+                }
+            }
+        }
+    }
+
+    /** Plays [anchorSec]'s surroundings muted under the cover, then seeks back to it. */
+    private suspend fun runAudioWarmup(anchorSec: Double, contentAtStart: String?) {
+        if (!_uiState.value.audioWarmupActive) _uiState.update { it.copy(audioWarmupActive = true) }
+        delay(audioWarmupSeconds.value.coerceAtLeast(1) * 1_000L)
+        if (_uiState.value.contentId != contentAtStart) return
+        issuingWarmupSeek = true
+        try {
+            seekImmediate(anchorSec)
+        } finally {
+            issuingWarmupSeek = false
+        }
+        // Keep the cover up until the seek has landed and refilled.
+        delay(AUDIO_WARMUP_SETTLE_MS)
+        withTimeoutOrNull(AUDIO_WARMUP_REBUFFER_TIMEOUT_MS) {
+            _uiState.first { !it.isBuffering }
+        }
+    }
+
+    private fun cancelAudioWarmup() {
+        pendingWarmupAnchorSec = null
+        audioWarmupJob?.cancel()
+        audioWarmupJob = null
+        if (_uiState.value.audioWarmupActive) {
+            _uiState.update { it.copy(audioWarmupActive = false) }
+        }
+    }
+
+    /**
+     * The player's playWhenReady changed, from any source: the remote, the
+     * HUD, the MediaSession, audio focus or the sleep timer. After a pause long
+     * enough for the audio output to have gone to standby, unpausing rewinds by
+     * the Rewind on Resume setting, so the line the HDMI audio device swallows
+     * while it locks back on is one the viewer has already heard. Not used in a
+     * Watch Party, where the room owns the position.
+     */
+    fun onPlayerPlayWhenReadyChanged(playWhenReady: Boolean) {
+        val state = _uiState.value
+        if (roomId != null || state.awaitingFirstFrame || state.audioWarmupActive) {
+            pausedAtElapsedMs = null
+            return
+        }
+        if (!playWhenReady) {
+            if (pausedAtElapsedMs == null) pausedAtElapsedMs = SystemClock.elapsedRealtime()
+            return
+        }
+        val pausedAt = pausedAtElapsedMs ?: return
+        pausedAtElapsedMs = null
+        if (SystemClock.elapsedRealtime() - pausedAt < UNPAUSE_REWIND_MIN_PAUSE_MS) return
+        val rewind = resumeRewindSeconds.value
+        if (rewind <= 0) return
+        val target = (state.position - rewind).coerceAtLeast(0.0)
+        if (target < state.position) seekImmediate(target)
+    }
+
     /** Toggle user-intent pause state. Screen mirrors this to player.play/pause. */
     fun onPlayPause() {
         // In a Watch Party every toggle goes through the room; a local flip
@@ -4353,10 +4535,12 @@ class TvPlayerViewModel(
                 )
                 DiagnosticsPlaybackLogger.seek(DiagnosticsSeekEvent.CommittedNative)
                 seekRequestChannel.trySend(decision.targetPlayerPositionSeconds)
+                watchSeekForAudioDropout(targetSourceSec)
             }
             null -> {
                 DiagnosticsPlaybackLogger.seek(DiagnosticsSeekEvent.CommittedWithoutPlan)
                 seekRequestChannel.trySend(targetSourceSec)
+                watchSeekForAudioDropout(targetSourceSec)
             }
         }
     }
